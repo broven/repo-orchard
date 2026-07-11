@@ -1,100 +1,73 @@
 # repo-orchard 🌳
 
-**一个「壳子仓库」模板：把几个相关的 git 仓库编排在一起，用 git worktree 的方式并行开工。**
+**一个「壳子仓库」模板:把一组相关 git 仓库编排在一起,用 git worktree 并行开工——主要给 Code Agent 使用。**
 
-单个仓库的 `git worktree` 只能隔离一个仓库。但很多任务是**跨多个仓库**的（前端 + 后端 + 共享库…），
-而且你常常有**多条并行任务**同时进行。`repo-orchard` 就是为这个场景做的壳子：
+## 这是什么(人读这一段就够)
 
-- 一个壳子仓库登记「一组相关仓库」（`repos.toml`）；
-- 每开一条任务，就给壳子开一个 **worktree**，在里面 `./wt add` 把需要的仓库各拉一个 worktree 进来；
-- 于是「一个工作区目录」里同时装着这次任务要动的几个仓库，改完各自开 PR，收工整组拆掉。
+跨多个仓库、又有多条并行任务时,单仓库的 `git worktree` 不够用。`repo-orchard` 提供一个「壳子」:
+它登记一组相关仓库,每条任务开一个壳子 worktree,在里面把需要的几个仓库各拉一个 worktree 进来一起改,
+改完各自开 PR,整组收工。适合「一条任务丢给一个 Code Agent」的并行开发。
 
 ---
 
-## ⭐ 关键：这个壳子是「用 worktree 的方式」使用的
+> **以下面向 Code Agent。** 完整、权威的操作说明以 **[AGENTS.md](./AGENTS.md) 为唯一真相**;
+> `CLAUDE.md` 仅转引它。本 README 补充「运行模型」与「编排工作流」两层背景,细节仍以 AGENTS.md 为准。
 
-**不要直接在壳子仓库的主 checkout 里干活。** 主 checkout 只用来放 `wt`、`repos.toml` 这套工具本身。
+## 运行模型
 
-真正干活的姿势是——**每条任务开一个壳子的 worktree**：
+- **壳子主 checkout** 只放编排工具(`wt` / `repos.toml`),**不在里面写业务代码**。
+- **每条任务 = 壳子的一个 worktree**;worktree 目录名 = 工作区名。
+- `./wt add <仓库>` 把选中仓库的 worktree 建到 `./repos/<名>/`,**分支统一用工作区名**,
+  base 取该仓库 `origin/main`(拉取前先 `git fetch`,保证基于最新远端主分支)。
+- `./repos/` 是运行时产物,已 gitignore。
 
 ```
-repo-orchard/                    # 壳子主 checkout（工具之家，别在这写业务代码）
-├── wt / repos.toml / AGENTS.md  # 编排工具与注册表
-
+repo-orchard/                    # 壳子主 checkout（工具之家）
 repo-orchard-feature-login/      # ← 任务 A 的 worktree（分支 feature-login）
-└── repos/
-    ├── frontend/                #   frontend 仓库的 worktree（分支 feature-login）
-    └── backend/                 #   backend  仓库的 worktree（分支 feature-login）
-
-repo-orchard-hotfix-payments/    # ← 任务 B 的 worktree（分支 hotfix-payments），与 A 完全隔离
-└── repos/
-    └── backend/
+└── repos/{frontend,backend}/    #   两个子仓库各自的 worktree，都在 feature-login 分支
+repo-orchard-hotfix-pay/         # ← 任务 B，与 A 完全隔离
+└── repos/backend/
 ```
 
-- **工作区名 = 壳子 worktree 的目录名**，也就是各子仓库新建分支的名字。
-- 每个子仓库的 worktree 从它自己的 `origin/main`（拉取前会 `git fetch`）新建同名分支，保证基于最新主分支。
-- 多个壳子 worktree 之间互不干扰 → 天然支持多条并行任务，很适合一条任务丢给一个 Code Agent。
+## 编排工作流(外层:怎么把任务分给 agent)
 
-> 搭配 [Orca](https://onorca.dev)、`git worktree`、或任何 worktree 管理器都行——壳子本身不绑定任何工具。
-
----
-
-## 🚀 快速开始
-
-1. **用本模板建一个你自己的壳子**（GitHub 上点 **Use this template**，或用 CLI）：
+1. **给壳子开多个 worktree**,每个 = 一条并行任务,各起一个 Code Agent:
    ```bash
-   gh repo create my-project-orchard --template broven/repo-orchard --private --clone
-   cd my-project-orchard
+   git worktree add ../repo-orchard-<任务名> -b <任务名>
    ```
+2. **告诉该 agent 这次要做什么** → agent 进入自己的 worktree,`./wt list` 读注册表,
+   **自行判断需要哪些仓库** → `./wt add <仓库...>`。
+3. agent 在 `./repos/*` 里**跨仓库改代码** → 完成后 `./wt pr` 给每个仓库开 PR。
+4. **收工**:`./wt cleanup` 干净拆除子仓库 worktree → 再删掉这个壳子 worktree,整组结束。
 
-2. **登记你的相关仓库**：编辑 `repos.toml`，把示例换成你本机的仓库路径与介绍：
-   ```toml
-   [frontend]
-   path = "/Users/you/code/frontend"
-   base = "origin/main"
-   desc = "Web 前端（React），主域 app.example.com"
+多个壳子 worktree 相互隔离 → 天然支持多条任务、多个 agent 并行,互不踩踏。
 
-   [backend]
-   path = "/Users/you/code/backend"
-   base = "origin/main"
-   desc = "API 后端（Go），网关 + 鉴权"
-   ```
+## agent 在 worktree 内怎么操作
 
-3. **开一条任务的工作区**（给壳子开个 worktree）：
-   ```bash
-   git worktree add ../my-project-orchard-feature-login -b feature-login
-   cd ../my-project-orchard-feature-login
-   ```
-
-4. **拉需要的仓库、干活、开 PR、收工**：
-   ```bash
-   ./wt list                 # 看有哪些仓库
-   ./wt add frontend backend # 各拉一个 worktree 到 ./repos/，分支=feature-login
-   # ... 在 ./repos/frontend、./repos/backend 里改代码 ...
-   ./wt pr                   # 各仓库 push 并开 PR
-   ./wt cleanup              # 收工：干净拆除子仓库 worktree（删本工作区前必做）
-   ```
-
----
-
-## 🛠 `wt` 命令
+**一切以 [AGENTS.md](./AGENTS.md) 为准。** `wt` 命令速览:
 
 | 命令 | 作用 |
 |---|---|
-| `./wt list` | 列出注册表里所有仓库 + 介绍 |
-| `./wt add <名> [名...]` | 把选中仓库的 worktree 建到 `./repos/`，分支 = 工作区名（base 取 `origin/main`，建前先 fetch） |
-| `./wt status` | 当前工作区已加入的仓库 + 各自 git 状态 |
-| `./wt pr [gh参数]` | 对每个已加入仓库 `push` 并 `gh pr create --fill` |
-| `./wt cleanup [--force]` | 拆除本工作区所有子仓库 worktree（有未提交改动会拒删，`--force` 强拆） |
-| `./wt prune` | 兜底：扫描注册表所有仓库，清掉悬空 worktree 记录（忘了 cleanup 就直接删目录时用） |
+| `./wt list` | 列出注册表所有仓库 + 介绍(据此选仓库) |
+| `./wt add <名...>` | 建选中仓库的 worktree 到 `./repos/`,分支=工作区名 |
+| `./wt status` | 已加入仓库 + 各自 git 状态 |
+| `./wt pr [gh参数]` | 各仓库 `push` + `gh pr create --fill` |
+| `./wt cleanup [--force]` | 拆除本工作区所有子仓库 worktree(有未提交改动会拒删) |
+| `./wt prune` | 兜底:清所有仓库的悬空 worktree 记录 |
 
-依赖：`bash` + `git`（`./wt pr` 需要 `gh`）。零其它依赖。
+依赖:`bash` + `git`(`./wt pr` 需 `gh`)。
 
----
+## 开一个新壳子
 
-## 📎 约定
+```bash
+gh repo create my-xxx-orchard --template broven/repo-orchard --private --clone
+cd my-xxx-orchard
+# 编辑 repos.toml 填这组相关仓库（path/base/desc），即可按上面的流程开工
+```
+或在 GitHub 页面点 **Use this template**。
 
-- **`AGENTS.md` 是唯一真相**：Code Agent 的完整操作说明在那里；`CLAUDE.md` 只是转引它。
-- **`repos.toml` 的 `base` 写 `origin/xxx`**（远程跟踪引用），才能保证从最新远端主分支拉。
-- **`./repos/` 已 gitignore**：子仓库 worktree 是运行时产物，不进壳子仓库的版本库。
-- **删工作区前先 `./wt cleanup`**：否则源仓库会残留悬空 worktree 记录（可用 `./wt prune` 补救）。
+## 约定
+
+- **`AGENTS.md` 唯一真相**;`CLAUDE.md` 只转引。
+- **`repos.toml` 的 `base` 写 `origin/xxx`**(远程跟踪引用),才能保证从最新远端主分支拉。
+- **`./repos/` 已 gitignore**;删工作区前先 `./wt cleanup`(忘了用 `./wt prune` 补救)。
