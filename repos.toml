@@ -1,0 +1,20 @@
+# 仓库注册表（机器可读，供 ./wt 读取）
+#
+# 每个仓库一个 [表名]，表名就是 `wt add <名字>` 用的名字。
+# 字段：
+#   path = 仓库在本机的绝对路径（必填）
+#   base = 新分支基于的 base ref（可选，缺省自动探测 origin/HEAD）
+#          注意：写成 origin/xxx（远程跟踪引用），才能保证从最新远端主分支拉。
+#   desc = 一句话介绍（给 Code Agent 挑仓库看的）
+#
+# ↓↓↓ 下面是示例。删掉它们，换成你自己的相关仓库。
+
+[example-frontend]
+path = "/absolute/path/to/your/frontend"
+base = "origin/main"
+desc = "示例：前端仓库，改成你自己的路径与介绍"
+
+[example-backend]
+path = "/absolute/path/to/your/backend"
+base = "origin/main"
+desc = "示例：后端仓库，改成你自己的路径与介绍"

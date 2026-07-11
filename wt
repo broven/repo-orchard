@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# wt — 多仓库 worktree helper（脚手架仓库自带，随 worktree 分发）
+#
+# 心智模型：当前这个脚手架 worktree 目录 = 一个「工作区」。
+# wt 把注册表里选中的仓库，各开一个 worktree 到 ./repos/<名字>/，
+# 分支统一用「工作区名」（= 本 worktree 目录名）。收工时 wt cleanup 一并拆除。
+#
+# 用法：
+#   ./wt list                 列出注册表里所有可用仓库
+#   ./wt add <名字> [名字...]  把这些仓库的 worktree 建到 ./repos/
+#   ./wt status               当前工作区已加入的仓库 + 各自 git 状态
+#   ./wt pr [gh参数...]        对每个已加入仓库 push 并 gh pr create
+#   ./wt cleanup [--force]     拆除本工作区所有子仓库 worktree
+#   ./wt prune                 兜底：扫描注册表所有仓库，清掉悬空 worktree 记录
+set -euo pipefail
+
+# 脚手架根 = 本脚本所在目录（每个 worktree 有自己的一份 wt）
+SCAFFOLD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REGISTRY="$SCAFFOLD_ROOT/repos.toml"
+REPOS_DIR="$SCAFFOLD_ROOT/repos"
+STATE="$REPOS_DIR/.state"   # 每行: name<TAB>src_path<TAB>target<TAB>branch
+
+c_red=$'\033[31m'; c_grn=$'\033[32m'; c_ylw=$'\033[33m'; c_dim=$'\033[2m'; c_rst=$'\033[0m'
+info() { printf '%s\n' "$*" >&2; }
+warn() { printf '%s%s%s\n' "$c_ylw" "$*" "$c_rst" >&2; }
+die()  { printf '%s%s%s\n' "$c_red" "$*" "$c_rst" >&2; exit 1; }
+
+[ -f "$REGISTRY" ] || die "找不到注册表: $REGISTRY"
+
+workspace_name() { printf '%s' "${WT_WS:-$(basename "$SCAFFOLD_ROOT")}"; }
+
+# --- 极简 TOML 读取（表名 = 仓库名，扁平字段；POSIX awk，兼容 BSD/macOS） ---
+toml_names() {
+  awk '/^[ \t]*\[[^]]+\]/ { line=$0; sub(/^[ \t]*\[[ \t]*/,"",line); sub(/[ \t]*\].*/,"",line); print line }' "$REGISTRY"
+}
+toml_get() { # $1=repo  $2=key
+  awk -v repo="$1" -v key="$2" '
+    /^[ \t]*\[[^]]+\]/ { line=$0; sub(/^[ \t]*\[[ \t]*/,"",line); sub(/[ \t]*\].*/,"",line); inrepo=(line==repo); next }
+    inrepo && $0 ~ ("^[ \t]*" key "[ \t]*=") {
+      v=$0; sub(/^[^=]*=[ \t]*/,"",v); sub(/[ \t]*$/,"",v); sub(/^"/,"",v); sub(/"$/,"",v); print v; exit
+    }' "$REGISTRY"
+}
+
+detect_base() { # $1=path -> 打印 base ref
+  local p="$1" h
+  h="$(git -C "$p" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's#refs/remotes/##')" || true
+  [ -n "$h" ] && { printf '%s' "$h"; return; }
+  for c in origin/main origin/master; do
+    git -C "$p" rev-parse --verify --quiet "$c" >/dev/null 2>&1 && { printf '%s' "$c"; return; }
+  done
+  git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null   # 兜底：当前分支
+}
+
+cmd_list() {
+  local ws; ws="$(workspace_name)"
+  info "${c_dim}工作区: ${ws}   （wt add 后分支名即为此）${c_rst}"
+  local n p d
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    p="$(toml_get "$n" path)"; d="$(toml_get "$n" desc)"
+    printf '  %s%-22s%s %s%s%s\n' "$c_grn" "$n" "$c_rst" "$c_dim" "${d:-$p}" "$c_rst"
+  done < <(toml_names)
+}
+
+cmd_add() {
+  [ "$#" -ge 1 ] || die "用法: wt add <名字> [名字...]"
+  mkdir -p "$REPOS_DIR"; touch "$STATE"
+  local ws; ws="$(workspace_name)"
+  local n path base target
+  for n in "$@"; do
+    path="$(toml_get "$n" path)"
+    [ -n "$path" ] || { warn "跳过 $n：注册表里没有此仓库（wt list 查看）"; continue; }
+    [ -d "$path/.git" ] || git -C "$path" rev-parse --git-dir >/dev/null 2>&1 || { warn "跳过 $n：$path 不是 git 仓库"; continue; }
+    target="$REPOS_DIR/$n"
+    if [ -e "$target" ]; then warn "跳过 $n：$target 已存在"; continue; fi
+    base="$(toml_get "$n" base)"; [ -n "$base" ] || base="$(detect_base "$path")"
+    # 先 fetch，保证 origin/* base 是远端最新；失败则明确告警（拿的是本地缓存）
+    if ! git -C "$path" fetch --quiet origin 2>/dev/null; then
+      warn "$n: git fetch 失败（离线？），base ${base} 用的是本地缓存，可能不是最新"
+    fi
+    if git -C "$path" show-ref --verify --quiet "refs/heads/$ws"; then
+      info "$n: 复用已有分支 $ws"
+      git -C "$path" worktree add "$target" "$ws" >/dev/null
+    else
+      info "$n: 新建分支 $ws (base ${base})"
+      git -C "$path" worktree add -b "$ws" "$target" "$base" >/dev/null
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$n" "$path" "$target" "$ws" >> "$STATE"
+    printf '  %s✓ %s%s -> repos/%s\n' "$c_grn" "$n" "$c_rst" "$n"
+  done
+}
+
+_each_state() { # 回调每行: name path target branch
+  [ -f "$STATE" ] || return 0
+  local name path target branch
+  while IFS=$'\t' read -r name path target branch; do
+    [ -n "$name" ] || continue
+    "$1" "$name" "$path" "$target" "$branch"
+  done < "$STATE"
+}
+
+cmd_status() {
+  [ -f "$STATE" ] && [ -s "$STATE" ] || { info "（本工作区还没加入任何仓库）"; return; }
+  _status_row() {
+    local name="$1" target="$3" branch="$4" n
+    if [ -d "$target" ]; then
+      n="$(git -C "$target" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+      printf '  %s%-22s%s %s  %s%s 处改动%s\n' "$c_grn" "$name" "$c_rst" "$branch" "$c_dim" "$n" "$c_rst"
+    else
+      printf '  %s%-22s%s %s%s(目录缺失)%s\n' "$c_ylw" "$name" "$c_rst" "$c_dim" "" "$c_rst"
+    fi
+  }
+  _each_state _status_row
+}
+
+cmd_pr() {
+  [ -f "$STATE" ] && [ -s "$STATE" ] || die "本工作区没有已加入的仓库"
+  command -v gh >/dev/null || die "需要 gh CLI"
+  local extra=("$@")
+  _pr_row() {
+    local name="$1" target="$3" branch="$4"
+    [ -d "$target" ] || { warn "$name: 目录缺失，跳过"; return; }
+    info "→ $name: push + PR"
+    git -C "$target" push -u origin "$branch"
+    ( cd "$target" && gh pr create --fill "${extra[@]}" ) || warn "$name: gh pr create 失败（可能已存在）"
+  }
+  _each_state _pr_row
+}
+
+cmd_cleanup() {
+  local force=""; [ "${1:-}" = "--force" ] && force="--force"
+  [ -f "$STATE" ] || { info "无可清理内容"; return; }
+  local kept; kept="$(mktemp)"       # 未成功拆除的行留下，保住跟踪
+  local name path target branch
+  while IFS=$'\t' read -r name path target branch; do
+    [ -n "$name" ] || continue
+    if [ -n "$force" ]; then
+      git -C "$path" worktree remove --force "$target" 2>/dev/null || rm -rf "$target"
+    elif ! git -C "$path" worktree remove "$target" 2>/dev/null; then
+      warn "$name: 有未提交改动，未删除。确认后用 wt cleanup --force"
+      printf '%s\t%s\t%s\t%s\n' "$name" "$path" "$target" "$branch" >> "$kept"
+      continue
+    fi
+    git -C "$path" worktree prune 2>/dev/null || true
+    printf '  %s✓ 已拆除 %s%s\n' "$c_grn" "$name" "$c_rst"
+  done < "$STATE"
+  if [ -s "$kept" ]; then
+    mv "$kept" "$STATE"
+    warn "仍有仓库未拆除，state 已保留。（archive hook 可据非 0 退出码中止删除）"
+    return 1
+  fi
+  rm -f "$kept" "$STATE"
+  rmdir "$REPOS_DIR" 2>/dev/null || true
+}
+
+cmd_prune() {
+  local n path out cleaned=0
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    path="$(toml_get "$n" path)"
+    [ -n "$path" ] && [ -d "$path" ] || continue
+    out="$(git -C "$path" worktree prune -v 2>&1)" || true
+    if [ -n "$out" ]; then
+      printf '  %s%s%s\n%s\n' "$c_grn" "$n" "$c_rst" "$out"
+      cleaned=1
+    fi
+  done < <(toml_names)
+  [ "$cleaned" = 0 ] && info "所有仓库均无悬空 worktree，干净。"
+}
+
+sub="${1:-list}"; shift || true
+case "$sub" in
+  list)    cmd_list "$@" ;;
+  add)     cmd_add "$@" ;;
+  status)  cmd_status "$@" ;;
+  pr)      cmd_pr "$@" ;;
+  cleanup) cmd_cleanup "$@" ;;
+  prune)   cmd_prune "$@" ;;
+  -h|--help|help) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0" ;;
+  *) die "未知命令: $sub（wt help 查看用法）" ;;
+esac
