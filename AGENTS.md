@@ -25,18 +25,14 @@
    ```
    完成后 `./repos/repo-a`、`./repos/repo-b` 就是对应仓库、位于工作区同名分支上的 worktree。直接进去改代码。
 
-3. **随时看状态**：
+3. **干完开 PR**（进各子仓库自己 push + 开 PR，不走 wt 封装）：
    ```bash
-   ./wt status
+   cd repos/<仓库名>
+   git push -u origin HEAD          # 分支名即工作区名
+   gh pr create --fill              # base 默认取仓库默认分支；多个仓库就逐个来
    ```
 
-4. **干完开 PR**（对每个已加入仓库 push 并建 PR）：
-   ```bash
-   ./wt pr
-   ```
-   需要传 gh 参数就接在后面，例如 `./wt pr --draft`。
-
-5. **收工拆除**（把子仓库 worktree 干净移除，避免源仓库残留悬空 worktree）：
+4. **收工拆除**（把子仓库 worktree 干净移除，避免源仓库残留悬空 worktree）：
    ```bash
    ./wt cleanup
    ```
@@ -47,12 +43,11 @@
 
 ## 兜底：忘了 cleanup 怎么办
 
-如果哪次直接删了工作区、忘了先 cleanup，到**本壳子仓库的主 checkout**（即非 worktree 的那个克隆，
-或任意其他还在的工作区）里跑：
+如果哪次直接删了工作区、忘了先 cleanup，源仓库会残留悬空 worktree 记录。到对应源仓库里跑一次 `git worktree prune` 清掉即可：
 ```bash
-./wt prune
+git -C /path/to/repo worktree prune -v   # 按 repos.toml 里各仓库 path 逐个清
 ```
-它会扫描注册表里所有仓库、清掉所有悬空 worktree 记录，一键恢复。
+（`wt` 不再封装此步——直接用 git 原生命令，少一层维护。）
 
 ## 加一个新仓库到注册表
 
