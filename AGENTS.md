@@ -23,16 +23,26 @@
    ```bash
    ./wt add repo-a repo-b
    ```
-   完成后 `./repos/repo-a`、`./repos/repo-b` 就是对应仓库、位于工作区同名分支上的 worktree。直接进去改代码。
+   完成后 `./repos/repo-a`、`./repos/repo-b` 就是对应仓库、位于工作区同名分支上的 worktree。进入目标仓库后，先执行下一步，再开始工作。
 
-3. **干完开 PR**（进各子仓库自己 push + 开 PR，不走 wt 封装）：
+3. **读取目标仓库说明（必须）**：
+
+   `./wt add` 完成后，在读取业务代码、安装依赖、启动服务或修改文件之前，必须先检查并完整阅读每个目标仓库根目录中的：
+
+   - `AGENTS.md`；
+   - `ONBOARD.md`（若存在）；
+   - `mise.toml` / `.mise.toml`（若存在，优先使用其中定义的任务）。
+
+   随后继续查找目标子目录内更具体的 `AGENTS.md`。目录层级更深的说明优先适用于该目录。禁止在未完成上述检查时自行猜测安装、启动或测试命令。
+
+4. **干完开 PR**（进各子仓库自己 push + 开 PR，不走 wt 封装）：
    ```bash
    cd repos/<仓库名>
    git push -u origin HEAD          # 分支名即工作区名
    gh pr create --fill              # base 默认取仓库默认分支；多个仓库就逐个来
    ```
 
-4. **收工拆除**（把子仓库 worktree 干净移除，避免源仓库残留悬空 worktree）：
+5. **收工拆除**（把子仓库 worktree 干净移除，避免源仓库残留悬空 worktree）：
    ```bash
    ./wt cleanup
    ```
