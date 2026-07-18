@@ -47,9 +47,16 @@
    ./wt cleanup
    ```
    若某仓库还有未提交改动会被拒绝删除并提示；确认无价值后可 `./wt cleanup --force`。
+   > **回收外部资源**：`./wt cleanup` 在删每个 worktree **之前**，会自动在该 worktree
+   > 目录内跑一次它声明的 `mise run teardown`（若定义了），回收 dev 期间拉起的
+   > **per-worktree 外部资源**（典型如 docker 起的 DB/缓存容器和卷）。必须「删之前、在
+   > worktree 里」跑，因为这类资源名按当前分支算（如 compose project `<repo>-<slug>`），
+   > worktree 一删就对不上、只能人肉逐个清。teardown 是 best-effort：仓库没定义就跳过，
+   > 失败只告警、不阻断拆除。**约定见下方「让仓库能被自动清理」。**
    > **重要**：删除本工作区（这个 worktree 目录）之前，**务必先 `./wt cleanup`**。
    > 直接删目录会把 `./repos/` 下的子 worktree 一起强删，源仓库会残留指向已消失路径的
-   > 悬空记录。（用 Orca 等工具「删除 worktree」也会 rm -rf 目录，同样要先 cleanup。）
+   > 悬空记录。（用 Orca 等工具「删除 worktree」也会 rm -rf 目录，同样要先 cleanup；
+   > 若把 archive/pre-remove 钩子接到 `./wt cleanup`，上面的 teardown 也一并自动生效。）
 
 ## 兜底：忘了 cleanup 怎么办
 
@@ -58,6 +65,24 @@
 git -C /path/to/repo worktree prune -v   # 按 repos.toml 里各仓库 path 逐个清
 ```
 （`wt` 不再封装此步——直接用 git 原生命令，少一层维护。）
+
+## 让仓库能被自动清理（约定：`mise run teardown`）
+
+如果某个子仓库在 **dev 时会拉起 per-worktree 的外部资源**——docker 起的 DB/缓存容器与
+命名卷、临时云沙箱、后台常驻进程等——那它**应当**在自己的 mise 配置里定义一个名为
+`teardown` 的任务，把这些资源**按当前 worktree/分支精确回收**。
+
+- **命名固定**：任务名就叫 `teardown`（`./wt cleanup` 靠这个名字探测；只有仓库确实
+  定义了才会调）。
+- **要做到 per-worktree 精确回收**：teardown 里用 `git rev-parse --abbrev-ref HEAD`
+  之类算出本 worktree 独有的资源名（如 `docker compose -p <repo>-<slug> ... down -v`），
+  只清本 worktree 拉起的那套，不误伤别的并行 worktree。
+- **幂等 + best-effort**：没起过资源也能安全空跑；失败不应炸（`./wt cleanup` 只告警不阻断）。
+- **语义 = 彻底销毁本 worktree 的 dev 环境**：该删的容器/卷一并删（不是「留数据下次
+  秒起」那种 stop）。
+
+具备该任务后，`./wt cleanup`（以及任何接到它的 archive/pre-remove 钩子）拆 worktree 前
+都会自动回收，无需再人肉记着清 docker。**没有这类外部资源的仓库（纯文档/纯库）不用定义。**
 
 ## 加一个新仓库到注册表
 
