@@ -9,6 +9,8 @@
 #   ./wt list                 列出注册表里所有可用仓库
 #   ./wt add <名字> [名字...]  把这些仓库的 worktree 建到 ./repos/
 #   ./wt cleanup [--force]     拆除本工作区所有子仓库 worktree
+#                              （拆前自动跑各仓库的 `mise run teardown` 回收
+#                               docker 等 per-worktree 外部资源；见 cmd_cleanup）
 set -euo pipefail
 
 # 脚手架根 = 本脚本所在目录（每个 worktree 有自己的一份 wt）
@@ -87,6 +89,24 @@ cmd_add() {
   done
 }
 
+# 约定：若某仓库 dev 时会拉起 per-worktree 的外部资源（docker 容器/卷、云沙箱…），
+# 它在自己的 mise 里定义一个名为 `teardown` 的任务来回收。这里在删 worktree 之前
+# 调它一次。为什么必须「删之前、且在 worktree 目录内」跑：teardown 通常靠
+# `git rev-parse --abbrev-ref HEAD` 算出 per-worktree 资源名（如 docker compose
+# project `<repo>-<slug>`）；worktree 一旦删掉，分支上下文没了，就再也对不上、
+# 只能靠人肉记住每个 slug 去清——正是 docker 泄漏的根因。
+# 语义：best-effort。仅当仓库确有 teardown 任务才跑；失败只告警，不阻断 worktree
+# 拆除（回收外部资源与拆 worktree 是两件事，前者不该把后者拖住）。
+run_teardown() {
+  local dir="$1" name="$2"
+  [ -d "$dir" ] || return 0
+  command -v mise >/dev/null 2>&1 || return 0
+  mise -C "$dir" tasks ls 2>/dev/null | awk '{print $1}' | grep -qx teardown || return 0
+  info "  ↳ ${name}: mise run teardown（回收 per-worktree 外部资源）"
+  ( cd "$dir" && mise run teardown ) \
+    || warn "$name: teardown 失败，可能有 docker 容器/卷等残留，需手动清理"
+}
+
 cmd_cleanup() {
   local force=""; [ "${1:-}" = "--force" ] && force="--force"
   [ -f "$STATE" ] || { info "无可清理内容"; return; }
@@ -94,10 +114,21 @@ cmd_cleanup() {
   local name path target branch
   while IFS=$'\t' read -r name path target branch; do
     [ -n "$name" ] || continue
+    # 非 force：worktree 有未提交改动（含未跟踪新文件）→ 整条保留、不碰，
+    # 也不跑 teardown——绝不毁掉尚未保存的工作及其 dev 数据。
+    # （porcelain 为空 ⇔ 下面的 git worktree remove 一定成功；gitignore 掉的
+    #   dev 生成物如 config/.installed/node_modules 不算，不会误挡。）
+    if [ -z "$force" ] && [ -n "$(git -C "$target" status --porcelain 2>/dev/null)" ]; then
+      warn "$name: 有未提交改动，未删除。确认后用 wt cleanup --force"
+      printf '%s\t%s\t%s\t%s\n' "$name" "$path" "$target" "$branch" >> "$kept"
+      continue
+    fi
+    # 确定要拆了 → 先回收该仓库 per-worktree 资源，再删 worktree。
+    run_teardown "$target" "$name"
     if [ -n "$force" ]; then
       git -C "$path" worktree remove --force "$target" 2>/dev/null || rm -rf "$target"
     elif ! git -C "$path" worktree remove "$target" 2>/dev/null; then
-      warn "$name: 有未提交改动，未删除。确认后用 wt cleanup --force"
+      warn "$name: worktree 拆除失败，已保留。"
       printf '%s\t%s\t%s\t%s\n' "$name" "$path" "$target" "$branch" >> "$kept"
       continue
     fi
