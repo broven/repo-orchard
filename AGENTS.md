@@ -42,11 +42,19 @@
    gh pr create --fill              # base 默认取仓库默认分支；多个仓库就逐个来
    ```
 
-5. **收工拆除**（把子仓库 worktree 干净移除，避免源仓库残留悬空 worktree）：
+5. **收工拆除**（把子仓库 worktree **和它建的分支**都干净移除，避免源仓库残留悬空 worktree、
+   以及越积越多的「PR 早就合了但没删」的本地分支）：
    ```bash
    ./wt cleanup
    ```
    若某仓库还有未提交改动会被拒绝删除并提示；确认无价值后可 `./wt cleanup --force`。
+   > **分支怎么判定**：清理时用 `git cherry <base> <branch>` 对着 `repos.toml` 里的 `base`
+   > （如 `origin/main`）判——没有「base 里找不到等价补丁」的提交就删（`base` 会先
+   > best-effort `fetch`）。**merge 与 squash 两种合并方式都能识别**（这正是不用 `git branch -d`
+   > 的原因：`-d` 只认「已并入 HEAD/upstream」，squash 合并后本地 main 往往还没 fetch，会误报未合并）。
+   > 还有未并入的提交就**保留并告警**，绝不会静默删掉没合进去的活；那个保留**不会**返回非 0，
+   > 所以不会因此阻断编排层的删除（分支本来就没删，没有数据损失）。要连未并入的一起删：
+   > `./wt cleanup --force`（对应 `git branch -D`）。
    > **回收外部资源**：`./wt cleanup` 在删每个 worktree **之前**，会自动在该 worktree
    > 目录内跑一次它声明的 `mise run teardown`（若定义了），回收 dev 期间拉起的
    > **per-worktree 外部资源**（典型如 docker 起的 DB/缓存容器和卷）。必须「删之前、在

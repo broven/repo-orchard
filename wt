@@ -8,9 +8,11 @@
 # 用法：
 #   ./wt list                 列出注册表里所有可用仓库
 #   ./wt add <名字> [名字...]  把这些仓库的 worktree 建到 ./repos/
-#   ./wt cleanup [--force]     拆除本工作区所有子仓库 worktree
+#   ./wt cleanup [--force]     拆除本工作区所有子仓库 worktree **及它们的分支**
 #                              （拆前自动跑各仓库的 `mise run teardown` 回收
 #                               docker 等 per-worktree 外部资源；见 cmd_cleanup）
+#                              分支判定 vs repos.toml 的 base：改动已并入 base → 删；
+#                              还有未并入的提交 → 保留并告警（绝不动没合进去的活）。
 set -euo pipefail
 
 # 脚手架根 = 本脚本所在目录（每个 worktree 有自己的一份 wt）
@@ -107,6 +109,53 @@ run_teardown() {
     || warn "$name: teardown 失败，可能有 docker 容器/卷等残留，需手动清理"
 }
 
+# 拆 worktree 之后清掉那个工作区分支。
+#
+# 为什么不能只删 worktree：分支是 wt add 建的（分支名 = 工作区名），不删的话源仓里会
+# 积一堆「PR 早就合了、但本地分支没人删」的名字，下次同名工作区还会「复用已有分支」
+# （cmd_add 的分支复用逻辑），于是新工作区带着旧分支的历史，很容易误判。
+#
+# 判定用 `git cherry <base> <branch>`：凡是在 base 里找不到等价补丁的提交会带 `+`。
+#   - 无 `+` → 改动已全部在 base 里（**merge 与 squash 两种合并方式都能识别**，
+#     这正是它比 `git branch -d` 强的地方：-d 只认「已并入 HEAD/upstream」，
+#     而 squash 合并后本地 main 通常还没 fetch，于是 -d 会误报未合并）；
+#   - 有 `+` → 还有没合进去的提交 → **保留**（绝不静默删掉别人的活）。
+# 所以 `-D` 只在我们自己已经证明过「无 `+`」之后才用，不是绕开安全检查。
+# `--force`（对应「强拆 worktree」）才无条件 `-D`。
+remove_workspace_branch() { # $1=name $2=src_path $3=branch $4=force(非空即强删)
+  local name="$1" path="$2" branch="$3" force="${4:-}" base pending
+  [ -n "$branch" ] || return 0
+  git -C "$path" show-ref --verify --quiet "refs/heads/$branch" || return 0
+
+  if [ -n "$force" ]; then
+    if git -C "$path" branch -D "$branch" >/dev/null 2>&1; then
+      printf '  %s✓ 已删除分支 %s（--force）%s\n' "$c_grn" "$branch" "$c_rst"
+    else
+      warn "$name: 强制删除分支 $branch 失败，已保留。"
+    fi
+    return 0
+  fi
+
+  base="$(toml_get "$name" base)"; [ -n "$base" ] || base="$(detect_base "$path")"
+  # best-effort fetch：判定要对着**最新** base，否则刚合完的 PR 会被判成未合并。
+  git -C "$path" fetch --quiet origin 2>/dev/null \
+    || warn "$name: fetch 失败（离线？），分支判定用的是本地缓存的 $base"
+
+  pending="$(git -C "$path" cherry "$base" "$branch" 2>/dev/null | grep -c '^+' || true)"
+  if [ "$pending" = "0" ]; then
+    if git -C "$path" branch -D "$branch" >/dev/null 2>&1; then
+      printf '  %s✓ 已删除分支 %s（改动均在 %s 里）%s\n' "$c_grn" "$branch" "$base" "$c_rst"
+    else
+      warn "$name: 分支 $branch 删除失败（被别的 worktree 占用？），已保留。"
+    fi
+  else
+    # 有意不返回非 0：worktree 已经拆了，分支也**没被**删掉，没有任何数据损失，
+    # 因此不该让编排层（archive / pre-remove 钩子）据此中止删除本工作区。
+    warn "$name: 分支 $branch 还有 $pending 个提交未并入 $base → 保留"
+    warn "         （确认这些提交无价值后再跑：./wt cleanup --force）"
+  fi
+}
+
 cmd_cleanup() {
   local force=""; [ "${1:-}" = "--force" ] && force="--force"
   [ -f "$STATE" ] || { info "无可清理内容"; return; }
@@ -133,6 +182,8 @@ cmd_cleanup() {
       continue
     fi
     git -C "$path" worktree prune 2>/dev/null || true
+    # 分支跟在 worktree 后面清（worktree 还在时那个分支是 checkout 状态，删不掉）。
+    remove_workspace_branch "$name" "$path" "$branch" "$force"
     printf '  %s✓ 已拆除 %s%s\n' "$c_grn" "$name" "$c_rst"
   done < "$STATE"
   if [ -s "$kept" ]; then
