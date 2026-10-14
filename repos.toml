@@ -18,3 +18,8 @@ desc = "示例：前端仓库，改成你自己的路径与介绍"
 path = "/absolute/path/to/your/backend"
 base = "origin/main"
 desc = "示例：后端仓库，改成你自己的路径与介绍"
+
+[feedmind]
+path = "/Users/metajs/gitRepos/github.com/broven/feedmind"
+base = "origin/main"
+desc = "个人信息摄入系统：定时从各 Feed 采集 → 存 Raw → 可插拔处理 → Timeline 网页（Node + TypeScript）"
