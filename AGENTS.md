@@ -8,7 +8,7 @@
 
 - **工作区名** = 当前目录名（也就是本 worktree 的名字），例如 `feature-login`。
 - `./wt add` 会把选中仓库的 worktree 建到 `./repos/<仓库名>/`，**分支统一用工作区名**。
-- 所有仓库信息登记在 `repos.toml`（名字 / 路径 / base / 一句话介绍）。
+- 所有仓库信息登记在 `repos.toml`（名字 / 路径 / clone 地址 / base / 一句话介绍）。
 - `./repos/` 是运行时生成、已 gitignore，不会污染本壳子仓库。
 
 ## 标准流程
@@ -70,7 +70,7 @@
 
 如果哪次直接删了工作区、忘了先 cleanup，源仓库会残留悬空 worktree 记录。到对应源仓库里跑一次 `git worktree prune` 清掉即可：
 ```bash
-git -C /path/to/repo worktree prune -v   # 按 repos.toml 里各仓库 path 逐个清
+git -C /path/to/repo worktree prune -v   # 按各仓库源路径逐个清（repos.toml 的 path，或远端主机上的 ~/src/<名字>）
 ```
 （`wt` 不再封装此步——直接用 git 原生命令，少一层维护。）
 
@@ -94,13 +94,31 @@ git -C /path/to/repo worktree prune -v   # 按 repos.toml 里各仓库 path 逐�
 
 ## 加一个新仓库到注册表
 
-编辑 `repos.toml`，复制一段改三行：
+编辑 `repos.toml`，复制一段改几行：
 ```toml
 [新名字]
-path = "/abs/path/to/repo"
+path = "/abs/path/to/repo"                    # 主力机上的路径；可省略
+url = "https://github.com/owner/repo.git"     # 远端主机靠它 clone；推荐 https
 base = "origin/main"   # 可省略，自动探测
 desc = "一句话介绍"
 ```
+`path` 和 `url` 至少要有一个；只要壳子可能跑到远端主机，就**一定写 `url`**。
+
+## 在远端主机上跑
+
+壳子不绑定某台机器：把它 clone 到远端主机（云 VM、Orca 远程 runtime 等）上，照样能建工作区、
+真实跑项目。`./wt add` 定位源仓库的顺序是：
+
+1. `path` 在本机存在就用；
+2. 否则用 `${WT_SRC_ROOT:-~/src}/<名字>`，之前 clone 过就复用；
+3. 都没有就按 `url` 自动 clone 到第 2 步的位置，然后照常开 worktree。
+
+所以远端第一次 `wt add` 某个仓库会慢一点（要 clone），之后就和本机一样。`wt cleanup`
+只拆 worktree 和分支，**不删** `~/src` 里的源仓库（它是这台主机的长期镜像）。
+
+前提（这些归主机管，不归壳子管）：远端要能用 `url` clone 和 push。用 https 的话，
+先 `gh auth login`，再 `gh auth setup-git`。仓库需要的工具链也要在远端装好。
+新 clone 的仓库如果有 `mise.toml`，第一次用之前可能要先 `mise trust`。
 
 ## 维护介绍：让下次更好找（重要）
 

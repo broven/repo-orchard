@@ -15,7 +15,7 @@
    - GitHub 上点 **Use this template** 新建一个仓库;或
    - 本地一条命令:`gh repo create my-xxx-orchard --template broven/repo-orchard --private --clone`
 
-2. **配置你的仓库** —— 编辑 `repos.toml`,把这次要一起工作的几个仓库的**本地路径**和**一句话说明**填进去(照文件里的示例改)。
+2. **配置你的仓库** —— 编辑 `repos.toml`,把这次要一起工作的几个仓库的**本地路径**(以及**clone 地址**,壳子跑到远端主机时靠它)和**一句话说明**填进去(照文件里的示例改)。
 
 3. **打开 Code Agent** —— 在工作区里启动你的 Code Agent,把任务交给它。剩下的(选仓库、拉 worktree、开 PR、收工)它会照 `AGENTS.md` 自己完成。
 
