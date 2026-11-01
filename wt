@@ -13,6 +13,9 @@
 #                               docker 等 per-worktree 外部资源；见 cmd_cleanup）
 #                              分支判定 vs repos.toml 的 base：改动已并入 base → 删；
 #                              还有未并入的提交 → 保留并告警（绝不动没合进去的活）。
+#
+# 源仓库定位（见 resolve_src）：本机有 path 就用；否则用 ${WT_SRC_ROOT:-~/src}/<名字>，
+# 没有就按 url 自动 clone —— 所以壳子在远端主机（云 VM、Orca 远程 runtime 等）上也能直接用。
 set -euo pipefail
 
 # 脚手架根 = 本脚本所在目录（每个 worktree 有自己的一份 wt）
@@ -63,17 +66,39 @@ cmd_list() {
   done < <(toml_names)
 }
 
+is_git_repo() { [ -d "$1" ] && git -C "$1" rev-parse --git-dir >/dev/null 2>&1; }
+
+# 找到（必要时 clone 出）本机上的源仓库，打印其路径。为什么不能只认 path：
+# path 是某台机器（通常是你的主力机）上的绝对路径，壳子跑到远端主机（云 VM、Orca 远程 runtime 等）
+# 上就不存在了。解析顺序：
+#   1. repos.toml 的 path —— 本机存在且是 git 仓库就用（原有用法不变）；
+#   2. ${WT_SRC_ROOT:-$HOME/src}/<名字> —— 之前 clone 过就复用；
+#   3. 都没有且登记了 url → git clone 到第 2 步的位置（远端首次 add 时发生）。
+resolve_src() { # $1=name
+  local n="$1" p url
+  p="$(toml_get "$n" path)"
+  if [ -n "$p" ] && is_git_repo "$p"; then printf '%s' "$p"; return 0; fi
+  p="${WT_SRC_ROOT:-$HOME/src}/$n"
+  if is_git_repo "$p"; then printf '%s' "$p"; return 0; fi
+  url="$(toml_get "$n" url)"
+  [ -n "$url" ] || { warn "跳过 ${n}：本机找不到源仓库（path 不存在、$p 也没有），且没登记 url 无法 clone"; return 1; }
+  [ -e "$p" ] && { warn "跳过 ${n}：$p 已存在但不是 git 仓库"; return 1; }
+  info "$n: 本机没有源仓库，clone $url -> $p"
+  mkdir -p "$(dirname "$p")"
+  git clone --quiet "$url" "$p" >&2 || { warn "跳过 ${n}：clone 失败（凭据？试试 gh auth status）"; return 1; }
+  printf '%s' "$p"
+}
+
 cmd_add() {
   [ "$#" -ge 1 ] || die "用法: wt add <名字> [名字...]"
   mkdir -p "$REPOS_DIR"; touch "$STATE"
   local ws; ws="$(workspace_name)"
   local n path base target
   for n in "$@"; do
-    path="$(toml_get "$n" path)"
-    [ -n "$path" ] || { warn "跳过 ${n}：注册表里没有此仓库（wt list 查看）"; continue; }
-    [ -d "$path/.git" ] || git -C "$path" rev-parse --git-dir >/dev/null 2>&1 || { warn "跳过 ${n}：$path 不是 git 仓库"; continue; }
+    toml_names | grep -qxF -- "$n" || { warn "跳过 ${n}：注册表里没有此仓库（wt list 查看）"; continue; }
     target="$REPOS_DIR/$n"
     if [ -e "$target" ]; then warn "跳过 ${n}：$target 已存在"; continue; fi
+    path="$(resolve_src "$n")" || continue
     base="$(toml_get "$n" base)"; [ -n "$base" ] || base="$(detect_base "$path")"
     # 先 fetch，保证 origin/* base 是远端最新；失败则明确告警（拿的是本地缓存）
     if ! git -C "$path" fetch --quiet origin 2>/dev/null; then

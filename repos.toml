@@ -2,7 +2,9 @@
 #
 # 每个仓库一个 [表名]，表名就是 `wt add <名字>` 用的名字。
 # 字段：
-#   path = 仓库在本机的绝对路径（必填）
+#   path = 仓库在你主力机上的绝对路径（可选；本机不存在时自动回退到 url）
+#   url  = clone 地址（壳子跑到远端主机时用；推荐 https，配合 gh 凭据）
+#          本机没有 path 时，wt add 会 clone 到 ${WT_SRC_ROOT:-~/src}/<名字>
 #   base = 新分支基于的 base ref（可选，缺省自动探测 origin/HEAD）
 #          注意：写成 origin/xxx（远程跟踪引用），才能保证从最新远端主分支拉。
 #   desc = 一句话介绍（给 Code Agent 挑仓库看的）
@@ -11,15 +13,12 @@
 
 [example-frontend]
 path = "/absolute/path/to/your/frontend"
+url = "https://github.com/your-org/frontend.git"
 base = "origin/main"
 desc = "示例：前端仓库，改成你自己的路径与介绍"
 
 [example-backend]
 path = "/absolute/path/to/your/backend"
+url = "https://github.com/your-org/backend.git"
 base = "origin/main"
 desc = "示例：后端仓库，改成你自己的路径与介绍"
-
-[feedmind]
-path = "/Users/metajs/gitRepos/github.com/broven/feedmind"
-base = "origin/main"
-desc = "个人信息摄入系统：定时从各 Feed 采集 → 存 Raw → 可插拔处理 → Timeline 网页（Node + TypeScript）"

@@ -14,7 +14,7 @@ When your work spans multiple repos and you have several tasks in flight, a sing
    - Click **Use this template** on GitHub to create a new repo; or
    - One command locally: `gh repo create my-xxx-orchard --template broven/repo-orchard --private --clone`
 
-2. **Configure your repos** — edit `repos.toml` and add the **local path** and a **one-line description** for each repo you want to work on together (follow the examples in the file).
+2. **Configure your repos** — edit `repos.toml` and add the **local path** (and a **clone url**, so the shell also works on remote hosts) and a **one-line description** for each repo you want to work on together (follow the examples in the file).
 
 3. **Open your Code Agent** — start your Code Agent in a workspace and give it the task. The rest (pick repos, add worktrees, open PRs, clean up) it handles itself per `AGENTS.md`.
 
