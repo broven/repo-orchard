@@ -113,7 +113,19 @@ cmd_add() {
     fi
     printf '%s\t%s\t%s\t%s\n' "$n" "$path" "$target" "$ws" >> "$STATE"
     printf '  %s✓ %s%s -> repos/%s\n' "$c_grn" "$n" "$c_rst" "$n"
+    run_mise_install "$target" "$n"
   done
+}
+
+# 约定：仓库的工具链（go / node / pnpm / lint…）写在它自己的 mise.toml，全局不兜底。
+# 所以 worktree 建好后在里面 `mise install` 一次：远端开发机 / orca-ws 容器上这一步才装上
+# 项目要的版本；Mac 上通常早已装好，是空操作。只装工具，不跑仓库的 install/setup 任务。
+# 语义同 teardown：best-effort，失败只告警（多半是没 trust：远端由 trusted_config_paths 覆盖）。
+run_mise_install() {
+  local dir="$1" name="$2"
+  command -v mise >/dev/null 2>&1 || return 0
+  mise -C "$dir" install </dev/null >/dev/null 2>&1 \
+    || warn "$name: mise install 失败，进 repos/$name 手动跑一次 mise install 看原因"
 }
 
 # 约定：若某仓库 dev 时会拉起 per-worktree 的外部资源（docker 容器/卷、云沙箱…），
